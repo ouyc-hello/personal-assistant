@@ -9,7 +9,7 @@ from personal_assistant.schemas import SearchHit
 class MemoryIndex(Protocol):
     """pgvector adapter: semantic index only, never the memory source of truth."""
 
-    def search(self, user_id: str, query: str, limit: int = 5) -> Sequence[SearchHit]: ...
+    def search(self, query: str, *, user_id: str, limit: int = 5) -> Sequence[SearchHit]: ...
 
 
 class DocumentIndex(Protocol):

@@ -86,6 +86,7 @@ def _hit_metadata(*, entity: GraphEntity, hops: int = 0, path: list[str] | None 
     source_refs = [source.as_dict() for source in entity.sources]
     metadata: dict[str, Any] = {
         "entity_key": entity.key,
+        "user_id": entity.user_id,
         "entity_type": entity.entity_type,
         "name": entity.name,
         "properties": dict(entity.properties),
@@ -312,7 +313,7 @@ class Neo4jGraphStore:
         MATCH (n:Entity {user_id: $user_id})
         WHERE (toLower(n.name) CONTAINS toLower($needle) OR toLower(n.key) CONTAINS toLower($needle))
           AND ($entity_type IS NULL OR n.entity_type = $entity_type)
-        RETURN n.key AS key, n.name AS name, n.entity_type AS entity_type,
+        RETURN n.key AS key, n.name AS name, n.entity_type AS entity_type, n.user_id AS user_id,
                n.properties_json AS properties_json, n.source_refs_json AS source_refs_json
         ORDER BY n.name, n.key
         LIMIT $limit
@@ -336,7 +337,7 @@ class Neo4jGraphStore:
         MATCH (start:Entity {{user_id: $user_id, key: $entity_key}})
         MATCH p=(start)-[:RELATED_TO*1..{max_hops}]-(neighbor:Entity {{user_id: $user_id}})
         WITH start, neighbor, min(length(p)) AS hops
-        RETURN start.name AS start_name, neighbor.key AS key, neighbor.name AS name,
+        RETURN start.name AS start_name, neighbor.key AS key, neighbor.name AS name, neighbor.user_id AS user_id,
                neighbor.entity_type AS entity_type, neighbor.properties_json AS properties_json,
                neighbor.source_refs_json AS source_refs_json, hops
         ORDER BY hops, neighbor.name, neighbor.key

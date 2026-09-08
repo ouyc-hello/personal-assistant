@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from personal_assistant.retrieval import route_backends
 from personal_assistant.rag.router import classify_route
 from personal_assistant.schemas import Route
 
@@ -15,11 +16,5 @@ class BackendSelection:
 def select_backends(message: str) -> BackendSelection:
     """Keep backend choice explicit so every retrieval is visible in the trace."""
     route = classify_route(message)
-    mapping = {
-        Route.CHAT: (),
-        Route.MEMORY: ("postgresql+pgvector",),
-        Route.DOCUMENT: ("milvus",),
-        Route.GRAPH: ("neo4j",),
-        Route.HYBRID: ("postgresql+pgvector", "milvus", "neo4j"),
-    }
-    return BackendSelection(route=route, backends=mapping[route])
+    backends = route_backends(route)
+    return BackendSelection(route=route, backends=backends)

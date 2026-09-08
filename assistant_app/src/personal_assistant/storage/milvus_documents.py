@@ -92,6 +92,7 @@ class MilvusDocumentStore:
                 metadata.update(
                     {
                         "document_id": entity.get("document_id"),
+                        "user_id": entity.get("user_id"),
                         "source_uri": entity.get("source_uri"),
                         "page": entity.get("page", -1),
                         "chunk_index": entity.get("chunk_index"),

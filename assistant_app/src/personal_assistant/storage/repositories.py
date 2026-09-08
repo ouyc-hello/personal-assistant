@@ -309,6 +309,7 @@ class MemoryRepository:
             backend="postgresql+pgvector",
             metadata={
                 "memory_id": record.id,
+                "user_id": record.user_id,
                 "status": record.status,
                 "kind": record.kind,
                 "source": record.source,
