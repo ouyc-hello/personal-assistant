@@ -1,1 +1,5 @@
-"""Database adapters. Business repositories will be added behind these boundaries."""
+"""PostgreSQL business store and retrieval backend contracts."""
+
+from .database import Database
+
+__all__ = ["Database"]

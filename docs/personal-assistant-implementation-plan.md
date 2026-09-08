@@ -601,7 +601,7 @@ security_denied_total
 
 公开仓库当前处于 CLI-first 实现准备阶段：根目录 `.gitignore` 继续忽略 `RAG/`、`interview_docs/` 和 `config.py`，这些学习材料与敏感配置不作为运行时依赖，也不会上传。正式代码放在独立的 `assistant_app/` 目录，并只提交 `.env.example`、接口、迁移和测试。
 
-本阶段先建立三存储适配器边界：PostgreSQL 保存业务真相，pgvector 保存可信记忆 embedding，Milvus 保存文档 chunk embedding，Neo4j 保存实体关系；LangChain/LangGraph 只依赖这些边界接口。真实数据库联调、Embedding 和外部工具在对应里程碑开启，Fake 模式用于无外部服务回归。
+本阶段已建立三存储适配器边界：PostgreSQL 保存业务真相，pgvector 保存可信记忆 embedding，Milvus 保存文档 chunk embedding，Neo4j 保存实体关系；LangChain/LangGraph 只依赖这些边界接口。M2 已补齐 PostgreSQL ORM 模型、Repository、状态迁移、审计和幂等约束，并用 SQLite 做确定性回归；真实数据库联调、Embedding 和外部工具在对应里程碑开启，Fake 模式用于无外部服务回归。
 
 ## 14. 里程碑
 

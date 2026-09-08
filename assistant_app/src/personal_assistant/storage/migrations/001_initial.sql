@@ -106,3 +106,28 @@ CREATE TABLE IF NOT EXISTS audit_events (
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS memory_candidates (
+    id UUID PRIMARY KEY,
+    memory_record_id UUID REFERENCES memory_records(id),
+    user_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('USER', 'LLM_INFERENCE', 'TOOL', 'MANUAL')),
+    confidence DOUBLE PRECISION NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    status TEXT NOT NULL DEFAULT 'CANDIDATE',
+    evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS approval_callbacks (
+    id BIGSERIAL PRIMARY KEY,
+    request_id UUID NOT NULL REFERENCES approval_requests(id),
+    source TEXT NOT NULL,
+    external_event_id TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (request_id, source, external_event_id)
+);
+
+CREATE INDEX IF NOT EXISTS audit_events_entity_idx
+    ON audit_events (entity_type, entity_id, id);

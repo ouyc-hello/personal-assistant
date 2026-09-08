@@ -6,9 +6,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from personal_assistant.agent.graph import build_graph, run_fake
+from personal_assistant.agent.graph import run_fake
 from personal_assistant.settings import Settings
 from personal_assistant.rag.router import classify_route
+from personal_assistant.storage.database import Database
 from personal_assistant.storage.milvus import health as milvus_health
 from personal_assistant.storage.neo4j import health as neo4j_health
 from personal_assistant.storage.postgres import health as postgres_health
@@ -49,6 +50,17 @@ def architecture() -> None:
     console.print("Neo4j       = entity relationships and Graph RAG")
     console.print("LangChain   = capability components")
     console.print("LangGraph   = execution flow and recovery")
+
+
+@app.command("db-init")
+def db_init() -> None:
+    """Create the portable development schema from SQLAlchemy models."""
+    database = Database(settings=_settings())
+    try:
+        database.create_schema_for_dev()
+    finally:
+        database.dispose()
+    console.print("[green]development schema ready[/green]")
 
 
 @app.command()

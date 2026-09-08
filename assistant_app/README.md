@@ -28,6 +28,9 @@ python -m personal_assistant route '我住在哪里？'
 python -m personal_assistant chat '你好' --fake
 python -m personal_assistant health
 
+# PostgreSQL 开发库已启动后，创建 ORM 开发表（生产使用 SQL migration）
+python -m personal_assistant db-init
+
 # 需要数据库时（仅本机开发）
 docker compose up -d
 ```
