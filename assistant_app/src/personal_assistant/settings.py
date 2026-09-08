@@ -23,6 +23,7 @@ class Settings:
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str | None = None
+    neo4j_database: str = "neo4j"
     default_user_id: str = "local-user"
     max_graph_steps: int = 5
 
@@ -51,6 +52,7 @@ class Settings:
             neo4j_uri=os.getenv("PA_NEO4J_URI", cls.neo4j_uri),
             neo4j_user=os.getenv("PA_NEO4J_USER", cls.neo4j_user),
             neo4j_password=os.getenv("PA_NEO4J_PASSWORD") or None,
+            neo4j_database=os.getenv("PA_NEO4J_DATABASE", cls.neo4j_database),
             default_user_id=os.getenv("PA_DEFAULT_USER_ID", cls.default_user_id),
             max_graph_steps=int(os.getenv("PA_MAX_GRAPH_STEPS", str(cls.max_graph_steps))),
         )
