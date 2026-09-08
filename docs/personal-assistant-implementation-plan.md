@@ -601,7 +601,7 @@ security_denied_total
 
 公开仓库当前处于 CLI-first 实现准备阶段：根目录 `.gitignore` 继续忽略 `RAG/`、`interview_docs/` 和 `config.py`，这些学习材料与敏感配置不作为运行时依赖，也不会上传。正式代码放在独立的 `assistant_app/` 目录，并只提交 `.env.example`、接口、迁移和测试。
 
-本阶段已建立三存储适配器边界：PostgreSQL 保存业务真相，pgvector 保存可信记忆 embedding，Milvus 保存文档 chunk embedding，Neo4j 保存实体关系；LangChain/LangGraph 只依赖这些边界接口。M2 已补齐 PostgreSQL ORM 模型、Repository、状态迁移、审计和幂等约束，并用 SQLite 做确定性回归；真实数据库联调、Embedding 和外部工具在对应里程碑开启，Fake 模式用于无外部服务回归。
+本阶段已建立三存储适配器边界：PostgreSQL 保存业务真相，pgvector 保存可信记忆 embedding，Milvus 保存文档 chunk embedding，Neo4j 保存实体关系；LangChain/LangGraph 只依赖这些边界接口。M2 已补齐 PostgreSQL ORM 模型、Repository、状态迁移、审计和幂等约束，并用 SQLite 做确定性回归；M3 已补齐 LangChain 文档加载/递归分块契约、Embedding 工厂、稳定 chunk ID、Milvus 文档索引适配器和来源 metadata。真实数据库联调、Embedding 和外部工具在对应里程碑开启，Fake 模式用于无外部服务回归。
 
 ## 14. 里程碑
 
@@ -610,7 +610,7 @@ security_denied_total
 | M0 | 基础设施与安全边界 | `assistant_app/` 可安装；`.env.example` 完整；真实 `.env`、本地数据和参考材料不会被提交 |
 | M1 | CLI + LangChain/LangGraph 骨架 | `assistant` 可启动 REPL/单次对话；Fake LLM 可运行；产生 thread/run trace |
 | M2 | PostgreSQL 业务层 | 完成 threads/messages/tasks/tool_runs/approvals/audit 迁移；状态迁移和幂等约束可测试 |
-| M3 | Milvus 文档 RAG | Markdown/TXT/PDF 导入、分块、Embedding、Milvus 检索、来源展示和索引重建可用 |
+| M3 | Milvus 文档 RAG | Markdown/TXT/PDF 导入、LangChain 分块、Embedding、Milvus 检索、PostgreSQL 元数据、来源展示和索引重建可用 |
 | M4 | pgvector 可信记忆 | 候选提取、冲突、发布/撤回/过期/删除、关系真源与向量索引同步可测 |
 | M5 | Neo4j Graph RAG | 实体关系抽取、幂等 upsert、实体查找、多跳检索和来源回链可用 |
 | M6 | 统一路由与混合检索 | LangGraph 按意图选择记忆/Milvus/Neo4j，支持权限过滤、融合、重排和 debug trace |

@@ -8,6 +8,8 @@ from rich.table import Table
 
 from personal_assistant.agent.graph import run_fake
 from personal_assistant.settings import Settings
+from personal_assistant.rag.embeddings import build_embeddings
+from personal_assistant.rag.ingest import ingest_file
 from personal_assistant.rag.router import classify_route
 from personal_assistant.storage.database import Database
 from personal_assistant.storage.milvus import health as milvus_health
@@ -50,6 +52,36 @@ def architecture() -> None:
     console.print("Neo4j       = entity relationships and Graph RAG")
     console.print("LangChain   = capability components")
     console.print("LangGraph   = execution flow and recovery")
+
+
+@app.command()
+def index(
+    path: Path,
+    user_id: str | None = typer.Option(None, help="Owner scope for indexed chunks."),
+) -> None:
+    """Load, split, embed and upsert one Markdown/TXT/PDF file into Milvus."""
+    settings = _settings()
+    from personal_assistant.storage.milvus_documents import MilvusDocumentStore
+    from personal_assistant.storage.repositories import KnowledgeRepository
+
+    embeddings = build_embeddings(settings)
+    store = MilvusDocumentStore(settings, embeddings)
+    database = Database(settings=settings)
+    try:
+        with database.session() as session:
+            result = ingest_file(
+                path,
+                user_id=user_id or settings.default_user_id,
+                embeddings=embeddings,
+                index=store,
+                metadata_store=KnowledgeRepository(session),
+            )
+    finally:
+        database.dispose()
+    console.print(
+        f"indexed {result.chunk_count} chunks from {result.source_uri} "
+        f"(document_id={result.document_id}, version={result.version})"
+    )
 
 
 @app.command("db-init")

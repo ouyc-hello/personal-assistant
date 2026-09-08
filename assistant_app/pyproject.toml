@@ -24,6 +24,7 @@ dependencies = [
   "pymilvus>=2.4,<3.0",
   "neo4j>=5.24,<6.0",
   "python-dotenv>=1.0,<2.0",
+  "pypdf>=5.0,<6.0",
 ]
 
 [project.optional-dependencies]

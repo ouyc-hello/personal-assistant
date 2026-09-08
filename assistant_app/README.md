@@ -8,7 +8,7 @@
 - **LangGraph**：路由、Agent loop、工具调用、审批 interrupt、checkpoint/resume。
 - **PostgreSQL**：业务真源，保存对话、记忆生命周期、任务、工具运行、审批和审计。
 - **pgvector**：PostgreSQL 中的可信记忆语义索引；索引不是事实真源。
-- **Milvus**：文档 chunk 的大规模向量检索。
+- **Milvus**：文档 chunk 的大规模向量检索；每条向量保留文档、版本、页码和权限 scope metadata。
 - **Neo4j**：实体、关系和多跳 Graph RAG。
 - **Typer + Rich**：终端入口，不提供 WebUI。
 
@@ -30,6 +30,9 @@ python -m personal_assistant health
 
 # PostgreSQL 开发库已启动后，创建 ORM 开发表（生产使用 SQL migration）
 python -m personal_assistant db-init
+
+# 导入单个 Markdown/TXT/PDF 文件（默认 fake embedding，需 Milvus 已启动）
+python -m personal_assistant index ./notes/project.md
 
 # 需要数据库时（仅本机开发）
 docker compose up -d

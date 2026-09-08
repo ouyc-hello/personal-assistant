@@ -113,6 +113,34 @@ class MemoryCandidate(Base):
     )
 
 
+class KnowledgeDocument(TimestampMixin, Base):
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (UniqueConstraint("user_id", "source_uri", "content_hash", name="uq_knowledge_document_source_hash"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    source_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="INDEXING", index=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False, default=dict)
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (UniqueConstraint("document_id", "chunk_index", "content_hash", name="uq_knowledge_chunk_content"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(GUID(), nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    milvus_id: Mapped[str | None] = mapped_column(String(128))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
 class Task(TimestampMixin, Base):
     __tablename__ = "tasks"
 

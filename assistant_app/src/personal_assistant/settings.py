@@ -12,6 +12,9 @@ class Settings:
     app_env: str = "development"
     llm_provider: str = "fake"
     llm_model: str | None = None
+    embedding_provider: str = "fake"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimension: int = 1536
     openai_api_key: str | None = None
     database_url: str = "postgresql+psycopg://assistant:assistant@localhost:5432/assistant"
     milvus_uri: str = "http://localhost:19530"
@@ -37,6 +40,9 @@ class Settings:
             app_env=os.getenv("PA_APP_ENV", cls.app_env),
             llm_provider=os.getenv("PA_LLM_PROVIDER", cls.llm_provider),
             llm_model=os.getenv("PA_LLM_MODEL") or None,
+            embedding_provider=os.getenv("PA_EMBEDDING_PROVIDER", cls.embedding_provider),
+            embedding_model=os.getenv("PA_EMBEDDING_MODEL", cls.embedding_model),
+            embedding_dimension=int(os.getenv("PA_EMBEDDING_DIMENSION", str(cls.embedding_dimension))),
             openai_api_key=os.getenv("PA_OPENAI_API_KEY") or None,
             database_url=os.getenv("PA_DATABASE_URL", cls.database_url),
             milvus_uri=os.getenv("PA_MILVUS_URI", cls.milvus_uri),

@@ -9,9 +9,12 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from personal_assistant.rag.models import IndexedChunk
 from personal_assistant.storage.models import (
     ApprovalRequest,
     AuditEvent,
+    KnowledgeChunk,
+    KnowledgeDocument,
     Message,
     Task,
     Thread,
@@ -109,6 +112,69 @@ class AuditRepository:
                 .where(AuditEvent.entity_type == entity_type, AuditEvent.entity_id == entity_id)
                 .order_by(AuditEvent.id)
             )
+        )
+
+
+class KnowledgeRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def register_document(self, *, document_id: str, user_id: str, source_uri: str,
+                          content_hash: str, version: int) -> None:
+        document = self.session.get(KnowledgeDocument, document_id)
+        if document is None:
+            document = KnowledgeDocument(
+                id=document_id,
+                user_id=user_id,
+                source_uri=source_uri,
+                content_hash=content_hash,
+                version=version,
+                status="INDEXING",
+            )
+            self.session.add(document)
+        else:
+            document.status = "INDEXING"
+            document.version = version
+        self.session.flush()
+        _audit(
+            self.session,
+            user_id=user_id,
+            event_type="KNOWLEDGE_DOCUMENT_INDEXING",
+            entity_type="knowledge_document",
+            entity_id=document_id,
+            payload={"source_uri": source_uri, "content_hash": content_hash, "version": version},
+        )
+
+    def register_chunks(self, chunks: list[IndexedChunk]) -> None:
+        for chunk in chunks:
+            existing = self.session.get(KnowledgeChunk, chunk.id)
+            if existing is None:
+                self.session.add(
+                    KnowledgeChunk(
+                        id=chunk.id,
+                        document_id=chunk.document_id,
+                        chunk_index=chunk.chunk_index,
+                        content_hash=_hash(chunk.text),
+                        milvus_id=chunk.id,
+                        metadata_json={**chunk.metadata, "source_uri": chunk.source_uri, "page": chunk.page},
+                    )
+                )
+        self.session.flush()
+
+    def set_document_status(self, document_id: str, status: str) -> None:
+        document = self.session.get(KnowledgeDocument, document_id)
+        if document is None:
+            raise LookupError(f"knowledge document not found: {document_id}")
+        document.status = status
+        document.updated_at = datetime.now(timezone.utc)
+        self.session.flush()
+        _audit(
+            self.session,
+            user_id=document.user_id,
+            event_type=f"KNOWLEDGE_DOCUMENT_{status}",
+            entity_type="knowledge_document",
+            entity_id=document.id,
+            payload={"status": status},
         )
 
 
