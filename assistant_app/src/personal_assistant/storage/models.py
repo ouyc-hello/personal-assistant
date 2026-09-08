@@ -103,11 +103,14 @@ class MemoryCandidate(Base):
     id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=new_id)
     memory_record_id: Mapped[str | None] = mapped_column(GUID(), index=True)
     user_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(30), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="CANDIDATE")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="CANDIDATE", index=True)
     evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    withdraw_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingType())
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

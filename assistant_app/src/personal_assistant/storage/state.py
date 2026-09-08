@@ -3,6 +3,16 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class MemoryStatus(StrEnum):
+    CANDIDATE = "CANDIDATE"
+    PUBLISHED = "PUBLISHED"
+    CONFLICT = "CONFLICT"
+    SUPERSEDED = "SUPERSEDED"
+    EXPIRED = "EXPIRED"
+    DELETED = "DELETED"
+    REJECTED = "REJECTED"
+
+
 class TaskStatus(StrEnum):
     CREATED = "CREATED"
     SCHEDULED = "SCHEDULED"

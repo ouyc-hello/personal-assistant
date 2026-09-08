@@ -49,4 +49,17 @@ docker compose up -d
 
 ## 当前范围
 
-当前提交建立配置、路由、三数据库健康检查和 LangGraph 最小骨架；业务迁移、真实 RAG 索引、可信记忆生命周期、工具审批将在后续里程碑实现。Fake 模式用于没有 LLM/数据库时的确定性回归。
+当前已完成 M1-M4 的可回归实现：
+
+- CLI、确定性路由和 LangGraph 风格的最小 Agent 骨架。
+- PostgreSQL 业务模型、Repository、状态迁移、幂等约束和审计。
+- LangChain 文档加载、递归分块、Embedding 工厂、Milvus 文档索引与来源 metadata。
+- 可信长期记忆生命周期：候选、来源/置信度、敏感信息拦截、冲突解决、版本 supersede、24 小时撤回、过期归档、删除审计，以及 pgvector 语义检索（SQLite fallback 仅用于测试）。
+
+`memory_records` 是可信记忆的关系真源；pgvector 只用于语义召回，默认只返回 `PUBLISHED` 记录，不能绕过状态、版本和权限规则。Neo4j Graph RAG、统一混合检索和可靠工具审批恢复将在后续里程碑实现。Fake 模式用于没有 LLM/数据库时的确定性回归。
+
+运行 M1-M4 回归测试：
+
+```bash
+PYTHONPATH=src pytest -q tests
+```
