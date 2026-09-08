@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: ${PA_POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    environment:
+      POSTGRES_DB: ${PA_POSTGRES_DB:-assistant}
+      POSTGRES_USER: ${PA_POSTGRES_USER:-assistant}
+      POSTGRES_PASSWORD: ${PA_POSTGRES_PASSWORD:?Set PA_POSTGRES_PASSWORD in assistant_app/.env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/personal_assistant/storage/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PA_POSTGRES_USER:-assistant} -d ${PA_POSTGRES_DB:-assistant}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  etcd:
+    image: ${PA_ETCD_IMAGE:-quay.io/coreos/etcd:v3.5.5}
+    command: >-
+      etcd --advertise-client-urls=http://0.0.0.0:2379
+      --listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    volumes:
+      - etcd_data:/etcd
+
+  minio:
+    image: ${PA_MINIO_IMAGE:-minio/minio:RELEASE.2024-06-13T22-53-53Z}
+    environment:
+      MINIO_ROOT_USER: ${PA_MINIO_ROOT_USER:?Set PA_MINIO_ROOT_USER in assistant_app/.env}
+      MINIO_ROOT_PASSWORD: ${PA_MINIO_ROOT_PASSWORD:?Set PA_MINIO_ROOT_PASSWORD in assistant_app/.env}
+    command: minio server /minio_data
+    volumes:
+      - minio_data:/minio_data
+
+  milvus:
+    image: ${PA_MILVUS_IMAGE:-milvusdb/milvus:v2.4.4}
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - etcd
+      - minio
+
+  neo4j:
+    image: ${PA_NEO4J_IMAGE:-neo4j:5-community}
+    environment:
+      NEO4J_AUTH: ${PA_NEO4J_USER:-neo4j}/${PA_NEO4J_PASSWORD:?Set PA_NEO4J_PASSWORD in assistant_app/.env}
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+
+volumes:
+  postgres_data:
+  etcd_data:
+  minio_data:
+  neo4j_data:

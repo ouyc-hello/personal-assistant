@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Runtime settings loaded from environment variables only."""
+
+    app_env: str = "development"
+    llm_provider: str = "fake"
+    llm_model: str | None = None
+    openai_api_key: str | None = None
+    database_url: str = "postgresql+psycopg://assistant:assistant@localhost:5432/assistant"
+    milvus_uri: str = "http://localhost:19530"
+    milvus_token: str | None = None
+    milvus_collection: str = "knowledge_chunks"
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str | None = None
+    default_user_id: str = "local-user"
+    max_graph_steps: int = 5
+
+    @classmethod
+    def from_env(cls, env_file: str | Path | None = None) -> "Settings":
+        """Load `.env` opportunistically, without ever requiring one in CI."""
+        if env_file is not None:
+            try:
+                from dotenv import load_dotenv
+
+                load_dotenv(Path(env_file), override=False)
+            except ImportError:
+                pass
+        return cls(
+            app_env=os.getenv("PA_APP_ENV", cls.app_env),
+            llm_provider=os.getenv("PA_LLM_PROVIDER", cls.llm_provider),
+            llm_model=os.getenv("PA_LLM_MODEL") or None,
+            openai_api_key=os.getenv("PA_OPENAI_API_KEY") or None,
+            database_url=os.getenv("PA_DATABASE_URL", cls.database_url),
+            milvus_uri=os.getenv("PA_MILVUS_URI", cls.milvus_uri),
+            milvus_token=os.getenv("PA_MILVUS_TOKEN") or None,
+            milvus_collection=os.getenv("PA_MILVUS_COLLECTION", cls.milvus_collection),
+            neo4j_uri=os.getenv("PA_NEO4J_URI", cls.neo4j_uri),
+            neo4j_user=os.getenv("PA_NEO4J_USER", cls.neo4j_user),
+            neo4j_password=os.getenv("PA_NEO4J_PASSWORD") or None,
+            default_user_id=os.getenv("PA_DEFAULT_USER_ID", cls.default_user_id),
+            max_graph_steps=int(os.getenv("PA_MAX_GRAPH_STEPS", str(cls.max_graph_steps))),
+        )

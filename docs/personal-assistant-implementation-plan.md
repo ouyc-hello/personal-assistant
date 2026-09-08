@@ -52,13 +52,14 @@
         │                  │                │
         └──────────────────┴────────────────┘
                         │
-        SQLite + FAISS/Chroma；生产阶段 PostgreSQL + pgvector
+        PostgreSQL = 业务真源；pgvector = 可信记忆语义检索
+        Milvus = 文档知识向量检索；Neo4j = 实体关系与 Graph RAG
 ```
 
 职责边界：
 
 ```text
-LangChain：文档加载、文本分块、Embedding、FAISS/Chroma、Retriever、RAG Tools
+LangChain：文档加载、文本分块、Embedding、Milvus/pgvector Retriever、RAG Tools
 LangGraph：路由、Agent 循环、工具调用、审批中断、Checkpoint、失败恢复
 Pydantic：结构化输出、工具参数、Agent State、记忆候选和任务模型
 业务层：可信长期记忆、记忆冲突、任务状态、审计、权限控制
@@ -103,7 +104,7 @@ MVP 不引入动态插件市场，也不把每个框架组件包装成插件。�
 
 | `fuyong` 组件 | 处理方式 | 本方案用途 |
 | --- | --- | --- |
-| 文档加载与分块示例 | 迁移验证 | 对照 LangChain loader/splitter 验证 Markdown、TXT、PDF 处理 |
+| 文档加载与分块示例 | 迁移验证 | 对照 LangChain loader/splitter 验证 Markdown、TXT、PDF 处理后写入 Milvus |
 | 混合检索示例 | 参考实现 | 迁移为 LangChain Retriever 组合，保留 RRF、metadata filter 和 trace |
 | 查询改写与路由 | 参考实现 | 迁移为 LangGraph 节点，不把查询改写结果直接当作工具参数 |
 | 重排与评估 | 参考实现 | 在 LangChain Retriever 后增加 reranker 和离线评估 |
@@ -114,7 +115,7 @@ MVP 不引入动态插件市场，也不把每个框架组件包装成插件。�
 | 能力 | 适配结论 |
 | --- | --- |
 | LangChain Retriever | 只负责召回候选记忆，并附带 `memory_id/status/source/confidence` metadata |
-| 向量库 | 初期使用 FAISS/Chroma；生产阶段按规模切换 PostgreSQL + pgvector |
+| 向量库 | 可信记忆使用 PostgreSQL + pgvector；文档知识使用 Milvus |
 | Memory Service | 负责候选提取、确认门禁、冲突、版本、过期、删除和审计 |
 | LangGraph state | 保存当前会话和任务上下文，不作为长期记忆真源 |
 
@@ -131,18 +132,40 @@ langchain-huggingface
 langchain-text-splitters
 langgraph
 pydantic
+pydantic-settings
 typer
 prompt-toolkit
 rich
-faiss-cpu / chromadb
-pydantic
-redis
-psycopg2-binary / asyncpg
+sqlalchemy
+psycopg[binary]
 pgvector
-openai
+pymilvus
+neo4j
 httpx
 python-dotenv
 ```
+
+MVP 不再把 FAISS/Chroma 作为正式生产后端；它们可以保留为离线评估依赖，但公开实现的目标后端固定为 PostgreSQL/pgvector、Milvus 和 Neo4j。
+
+### 4.5 三存储职责与数据边界
+
+本项目同时引入 Milvus、Neo4j 和 PostgreSQL + pgvector，但三者不承担相同职责，也不互相复制业务真相：
+
+```text
+PostgreSQL       = 业务系统真源、事务、状态机、审计、LangGraph checkpoint 元数据
+pgvector         = PostgreSQL 内的可信记忆语义索引，索引失效可由关系记录重建
+Milvus           = 大规模文档分块向量检索，不保存记忆生命周期和审批状态
+Neo4j            = 实体、关系、多跳路径和 Graph RAG，不替代任务/审批表
+```
+
+| 系统 | 首批数据 | 必须遵守的边界 |
+| --- | --- | --- |
+| PostgreSQL | `threads`、`messages`、`memory_records`、`memory_candidates`、`tasks`、`tool_runs`、`approval_requests`、`audit_events`、文档元数据 | 所有状态迁移、幂等约束、权限判断和审计在事务中完成 |
+| pgvector | 已发布记忆和候选记忆的 embedding | 只做召回索引；以 `memory_records.status`、版本和权限过滤，不能单独决定“可信” |
+| Milvus | Markdown/TXT/PDF 等文档 chunk embedding | 每条向量必须带 `document_id/chunk_id/version/scope/source/page`；删除和重建由 PostgreSQL 元数据驱动 |
+| Neo4j | `Person`、`Project`、`Task`、`Document`、`Policy` 等节点及关系 | 只保存可解释的实体关系；任务状态和审批状态仍以 PostgreSQL 为准 |
+
+LangGraph 路由按问题类型选择后端：记忆问题走 PostgreSQL 过滤 + pgvector，文档问题走 Milvus，关系/多跳问题走 Neo4j；无法确定时执行受权限约束的混合检索，并在 CLI trace 中显示实际命中的后端。MVP 先实现适配器接口和健康检查，再逐步接入真实索引，避免在业务层散落数据库 SDK 调用。
 
 ## 5. CLI 规划
 
@@ -188,42 +211,24 @@ assistant debug           # 查看最近一次路由、检索和工具过程
 ### 6.1 建议目录
 
 ```text
-python/personal-assistant/
-├── cli/
-│   ├── main.py
-│   ├── repl.py
-│   └── commands.py
-├── assistant/
-│   ├── graph.py
-│   ├── router.py
-│   ├── state.py
-│   ├── prompts.py
-│   └── schemas.py
-├── rag/
-│   ├── loaders.py
-│   ├── chunking.py
-│   ├── embeddings.py
-│   ├── vector_store.py
-│   ├── retrievers.py
-│   └── tools.py
-├── memory/
-│   ├── service.py
-│   ├── extractor.py
-│   ├── lifecycle.py
-│   └── retriever.py
-├── tools/
-│   ├── registry.py
-│   ├── executor.py
-│   ├── weather.py
-│   └── reminders.py
-├── storage/
-│   ├── sqlite.py
-│   ├── repositories.py
-│   └── migrations/
-├── tests/
-├── docs/
-├── .env.example
-└── requirements.txt
+assistant_app/
+├── pyproject.toml                 # 可安装 CLI 与成熟框架依赖
+├── docker-compose.yml             # PostgreSQL/pgvector、Milvus、Neo4j 本地基础设施
+├── .env.example                   # 仅配置模板，不含真实密钥
+├── src/personal_assistant/
+│   ├── cli.py                     # Typer + Rich 终端入口
+│   ├── settings.py                # 环境变量配置（不使用根目录 config.py）
+│   ├── schemas.py                 # Pydantic 契约与 Agent state
+│   ├── agent/graph.py             # LangGraph 最小执行图
+│   ├── rag/router.py              # 检索路由
+│   └── storage/
+│       ├── contracts.py           # 记忆/文档/图检索接口
+│       ├── backends.py            # 后端选择与职责边界
+│       ├── postgres.py            # PostgreSQL + pgvector 健康检查/适配器入口
+│       ├── milvus.py              # Milvus 健康检查/适配器入口
+│       ├── neo4j.py               # Neo4j 健康检查/适配器入口
+│       └── migrations/            # PostgreSQL 业务表和 pgvector 扩展
+└── tests/                         # Fake 模式和路由回归测试
 ```
 
 ### 6.2 Assistant Graph
@@ -592,40 +597,30 @@ security_denied_total
 | 确定性 Fake LLM/工具 | 不依赖真实服务即可回归路由、三分类状态机和审批流程 |
 | 组件失败降级 | Retriever、Embedding 或工具失败时，状态机可记录错误并安全结束 |
 
-### 13.5 当前落地状态（2026-08-28）
+### 13.5 当前落地状态（2026-09-08）
 
-`python/personal-assistant` 当前处于 CLI-first 重构阶段：保留可信记忆、工具状态、审批和审计设计，应用入口调整为 Typer/prompt_toolkit/Rich，Agent 编排采用 LangGraph，RAG 组件采用 LangChain；第一阶段使用 SQLite + FAISS/Chroma，生产阶段再评估 PostgreSQL + pgvector。
+公开仓库当前处于 CLI-first 实现准备阶段：根目录 `.gitignore` 继续忽略 `RAG/`、`interview_docs/` 和 `config.py`，这些学习材料与敏感配置不作为运行时依赖，也不会上传。正式代码放在独立的 `assistant_app/` 目录，并只提交 `.env.example`、接口、迁移和测试。
 
-本轮可靠性补齐包括：
-
-- LLM、Embedding、Retriever 和工具失败都记录统一错误码，不把供应商原始错误直接暴露给用户；
-- `thread_id`、`run_id` 和 `request_id` 贯穿 LangGraph state、消息、工具运行和记忆审计；
-- `THREAD_CREATED`、`MESSAGE_CREATED`、`TOOL_RUN_CREATED/COMPLETED/FAILED` 审计只保留哈希、长度、类型和错误码；
-- 删除长期记忆前写 `MEMORY_DELETE_REQUESTED`，业务层验证删除后才更新本地 `DELETED`；
-- `USER_QUOTE` 的 `evidence.quote` 经 NFKC/空白归一化后必须是用户原文子串；
-- LangChain Retriever 检索失败可安全降级为空，但必须保留 trace；
-- LLM、Embedding 和工具分别配置超时、最大重试次数和止损策略；
-- LangGraph checkpointer 保存会话状态，审批中断后可从终端恢复；
-- `assistant debug` 输出当前路由、检索来源、节点、工具状态和错误码；
-- SQLite 迁移按版本执行，生产阶段再增加 PostgreSQL/pgvector 迁移。
-
-当前计划不再以 WebUI、SSE 或插件市场作为 MVP 验收条件；真实 LLM、Embedding、外部工具和 PostgreSQL 联调在对应阶段执行。
+本阶段先建立三存储适配器边界：PostgreSQL 保存业务真相，pgvector 保存可信记忆 embedding，Milvus 保存文档 chunk embedding，Neo4j 保存实体关系；LangChain/LangGraph 只依赖这些边界接口。真实数据库联调、Embedding 和外部工具在对应里程碑开启，Fake 模式用于无外部服务回归。
 
 ## 14. 里程碑
 
 | 阶段 | 范围 | 验收 |
 | --- | --- | --- |
-| M1 | CLI + LangChain/LangGraph 骨架 | `assistant` 可启动 REPL，支持多轮对话、退出、基础 trace 和 Fake LLM 测试 |
-| M2 | LangChain 文档 RAG | 支持 Markdown/TXT/PDF 导入、分块、Embedding、FAISS/Chroma 检索和来源展示 |
-| M3 | 可信长期记忆 | 候选提取、确认门禁、24 小时撤回、冲突、过期、删除和审计完整可测 |
-| M4 | LangGraph 工具与审批 | 工具调用、三分类状态、重试/止损、审批中断、checkpoint 和终端恢复可复现 |
-| M5 | 生产化存储与可靠性 | PostgreSQL+pgvector、定时任务、外部回调、监控、权限和红队测试按需加入 |
+| M0 | 基础设施与安全边界 | `assistant_app/` 可安装；`.env.example` 完整；真实 `.env`、本地数据和参考材料不会被提交 |
+| M1 | CLI + LangChain/LangGraph 骨架 | `assistant` 可启动 REPL/单次对话；Fake LLM 可运行；产生 thread/run trace |
+| M2 | PostgreSQL 业务层 | 完成 threads/messages/tasks/tool_runs/approvals/audit 迁移；状态迁移和幂等约束可测试 |
+| M3 | Milvus 文档 RAG | Markdown/TXT/PDF 导入、分块、Embedding、Milvus 检索、来源展示和索引重建可用 |
+| M4 | pgvector 可信记忆 | 候选提取、冲突、发布/撤回/过期/删除、关系真源与向量索引同步可测 |
+| M5 | Neo4j Graph RAG | 实体关系抽取、幂等 upsert、实体查找、多跳检索和来源回链可用 |
+| M6 | 统一路由与混合检索 | LangGraph 按意图选择记忆/Milvus/Neo4j，支持权限过滤、融合、重排和 debug trace |
+| M7 | 可靠工具与审批恢复 | interrupt/resume、checkpoint、重试/止损、快照哈希、回调去重、重启对账可复现 |
 
 ## 15. 面试主讲逻辑
 
 1. 先讲“这个方案不是纯聊天”：它把对话、记忆、工具、审批四件事统一到状态、Trace 和审计上。
 2. 再讲框架边界：LangChain 负责能力组件，LangGraph 负责执行流程，Pydantic 负责结构化数据；可信记忆、状态机、权限和审计仍由业务层持有。
-3. 再讲技术选型：CLI 使用 Typer/prompt_toolkit/Rich，RAG 使用 LangChain，Agent 编排使用 LangGraph，初期使用 SQLite + FAISS/Chroma，后续按规模升级存储。
+3. 再讲技术选型：CLI 使用 Typer/prompt_toolkit/Rich，RAG 使用 LangChain，Agent 编排使用 LangGraph；PostgreSQL 保存业务真相，pgvector 服务可信记忆，Milvus 服务文档知识，Neo4j 服务多跳关系。
 4. 重点讲记忆：来源、置信度、高置信自动发布、24 小时撤回、冲突、过期、删除。
 5. 重点讲工具：未执行/失败/成功未回传三分类、PARAM_ADJUSTMENT 语义重试、Trace 和止损。
 6. 重点讲审批：快照哈希、数据库状态轮询、唯一索引去重、幂等回调、启动对账。
@@ -633,4 +628,4 @@ security_denied_total
 
 ## 16. 可直接使用的简历描述
 
-> 基于 LangChain + LangGraph + SQLite/FAISS 构建终端个人助理：由 LangChain 提供文档加载、分块、Embedding、Retriever 和 RAG Tools，由 LangGraph 负责路由、Agent 循环、工具调用、审批中断、Checkpoint 和失败恢复，并通过业务层实现可信长期记忆、来源证据、24 小时撤回、冲突检测、过期删除、工具 Trace 和审计；使用 Typer + prompt_toolkit + Rich 提供 CLI 交互，后续按数据规模升级 PostgreSQL + pgvector。
+> 基于 LangChain + LangGraph + PostgreSQL/pgvector/Milvus/Neo4j 构建终端个人助理：由 LangChain 提供文档加载、分块、Embedding、Retriever 和 RAG Tools，由 LangGraph 负责路由、Agent 循环、工具调用、审批中断、Checkpoint 和失败恢复，并通过 PostgreSQL 业务层实现可信长期记忆、来源证据、24 小时撤回、冲突检测、过期删除、工具 Trace 和审计；使用 Typer + prompt_toolkit + Rich 提供 CLI 交互，使用 pgvector 管理可信记忆、Milvus 管理文档向量、Neo4j 管理实体关系。
