@@ -4,14 +4,14 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from personal_assistant.settings import Settings
 from personal_assistant.storage.database import Database
-from personal_assistant.storage.models import Task
+from personal_assistant.storage.models import Message, Task
 from personal_assistant.storage.repositories import TaskRepository, ThreadRepository
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -130,6 +130,39 @@ def persist_conversation_turn(
             threads.append_message(thread.id, "user", user_message)
             threads.append_message(thread.id, "assistant", assistant_message)
             return thread.id
+    finally:
+        database.dispose()
+
+
+def load_conversation_history(
+    settings: Settings,
+    thread_id: str | None,
+    *,
+    limit: int = 20,
+) -> list[tuple[str, str]]:
+    """Load prior user/assistant messages for a thread, newest window in order."""
+    if not thread_id or limit <= 0:
+        return []
+    database = Database(settings=settings)
+    try:
+        with database.session() as session:
+            if session.bind is not None and session.bind.dialect.name == "postgresql":
+                rows = session.execute(
+                    text(
+                        "SELECT role, content FROM messages "
+                        "WHERE thread_id = CAST(:thread_id AS uuid) "
+                        "ORDER BY created_at DESC, id DESC LIMIT :limit"
+                    ),
+                    {"thread_id": thread_id, "limit": limit},
+                ).all()
+                return [(str(role), str(content)) for role, content in reversed(rows)]
+            rows = session.scalars(
+                select(Message)
+                .where(Message.thread_id == thread_id)
+                .order_by(Message.event_seq.desc())
+                .limit(limit)
+            ).all()
+            return [(message.role, message.content) for message in reversed(rows)]
     finally:
         database.dispose()
 

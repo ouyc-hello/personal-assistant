@@ -43,6 +43,7 @@ class AssistantState(BaseModel):
     memory_hits: list[SearchHit] = Field(default_factory=list)
     knowledge_hits: list[SearchHit] = Field(default_factory=list)
     graph_hits: list[SearchHit] = Field(default_factory=list)
+    retrieved_hits: list[SearchHit] = Field(default_factory=list)
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     answer: str = ""
     trace: list[str] = Field(default_factory=list)
