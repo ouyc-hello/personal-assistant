@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import uuid4
@@ -8,8 +8,11 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from personal_assistant.storage.models import ApprovalRequest, ToolRun
-from personal_assistant.storage.repositories import ApprovalRepository, ToolRunRepository
+from personal_assistant.storage.models import ApprovalRequest, Thread, ToolRun
+from personal_assistant.storage.repositories import (
+    ApprovalRepository,
+    ToolRunRepository,
+)
 
 
 @dataclass(frozen=True)
@@ -27,9 +30,18 @@ class IdempotentTool(Protocol):
 class ToolExecutor:
     """Persist tool state around an idempotent external side effect."""
 
-    def __init__(self, session_factory: sessionmaker[Session], tools: Mapping[str, IdempotentTool]) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        tools: Mapping[str, IdempotentTool],
+        *,
+        max_attempts: int = 4,
+    ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self.session_factory = session_factory
         self.tools = dict(tools)
+        self.max_attempts = max_attempts
 
     def execute(
         self,
@@ -61,19 +73,46 @@ class ToolExecutor:
             if run.status == "COMPLETED":
                 return run
             if run.status == "EXECUTED_SUCCESS_UNACK" and acknowledge:
-                return repo.transition(run.id, "COMPLETED", user_id=user_id, trace_event={"event": "acknowledged"})
+                result = repo.transition(
+                    run.id,
+                    "COMPLETED",
+                    user_id=user_id,
+                    trace_event={"event": "acknowledged"},
+                )
+                session.commit()
+                return result
             if run.status not in {"CREATED", "EXECUTED_FAILED"}:
+                session.commit()
                 return run
-            repo.transition(run.id, "EXECUTING", user_id=user_id, trace_event={"event": "execution_started"})
+            if run.status == "EXECUTED_FAILED":
+                if run.attempt >= self.max_attempts:
+                    run = repo.append_trace(
+                        run.id,
+                        user_id=user_id,
+                        trace_event={"event": "retry_exhausted", "max_attempts": self.max_attempts},
+                        audit_event_type="TOOL_RUN_RETRY_EXHAUSTED",
+                    )
+                    session.commit()
+                    return run
+                run.attempt += 1
+                run.trace = [*run.trace, {"event": "retry_scheduled", "attempt": run.attempt}]
+                session.flush()
+            repo.transition(run.id, "EXECUTING", user_id=user_id, trace_event={"event": "execution_started", "attempt": run.attempt})
             try:
                 outcome = tool.execute(arguments, idempotency_key=idempotency_key)
-            except Exception as exc:
-                return repo.transition(
+            except Exception as exc:  # noqa: BLE001 - external tool boundary
+                result = repo.transition(
                     run.id,
                     "EXECUTED_FAILED",
                     user_id=user_id,
-                    trace_event={"event": "execution_failed", "error_type": type(exc).__name__},
+                    trace_event={
+                        "event": "execution_failed",
+                        "error_type": type(exc).__name__,
+                        "attempt": run.attempt,
+                    },
                 )
+                session.commit()
+                return result
             run = repo.transition(
                 run.id,
                 "EXECUTED_SUCCESS_UNACK",
@@ -110,18 +149,198 @@ class ApprovalService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
 
-    def request(self, *, user_id: str, snapshot: Mapping[str, Any], workflow_version: str, thread_id: str | None = None) -> ApprovalRequest:
+    def request(
+        self,
+        *,
+        user_id: str,
+        snapshot: Mapping[str, Any],
+        workflow_version: str,
+        thread_id: str | None = None,
+    ) -> ApprovalRequest:
         with self.session_factory() as session:
-            request = ApprovalRepository(session).create(user_id=user_id, snapshot=snapshot, workflow_version=workflow_version, thread_id=thread_id)
+            if thread_id is not None:
+                thread = session.get(Thread, thread_id)
+                if thread is None:
+                    raise LookupError(f"thread not found: {thread_id}")
+                if thread.user_id != user_id:
+                    raise PermissionError("thread does not belong to the configured user")
+            request = ApprovalRepository(session).create(
+                user_id=user_id,
+                snapshot=snapshot,
+                workflow_version=workflow_version,
+                thread_id=thread_id,
+            )
             ApprovalRepository(session).transition(request.id, "PENDING_CONFIRMATION", user_id=user_id)
             session.commit()
             return request
 
+    def get(
+        self,
+        *,
+        request_id: str,
+        user_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> ApprovalRequest:
+        with self.session_factory() as session:
+            request = ApprovalRepository(session).get(request_id)
+            if request is None:
+                raise LookupError(f"approval request not found: {request_id}")
+            self._validate_scope(
+                session, request, user_id=user_id, thread_id=thread_id
+            )
+            return request
+
     def confirm(self, *, request_id: str, user_id: str, snapshot_hash: str, workflow_version: str) -> ApprovalRequest:
         with self.session_factory() as session:
-            request = ApprovalRepository(session).transition(request_id, "SUBMITTING", user_id=user_id, expected_snapshot_hash=snapshot_hash, expected_workflow_version=workflow_version)
+            request = ApprovalRepository(session).transition(
+                request_id,
+                "SUBMITTING",
+                user_id=user_id,
+                expected_snapshot_hash=snapshot_hash,
+                expected_workflow_version=workflow_version,
+            )
             session.commit()
             return request
+
+    def begin_resolution(
+        self,
+        *,
+        request_id: str,
+        user_id: str,
+        approved: bool,
+        thread_id: str | None = None,
+    ) -> ApprovalRequest:
+        """Durably mark a decision before resuming a paused graph.
+
+        ``SUBMITTING`` is a recovery boundary: if checkpoint resume fails after
+        this commit, the request can be marked ``UNKNOWN`` and retried without
+        silently treating an incomplete operation as approved.
+        """
+        with self.session_factory() as session:
+            repo = ApprovalRepository(session)
+            request = repo.get(request_id)
+            if request is None:
+                raise LookupError(f"approval request not found: {request_id}")
+            self._validate_scope(session, request, user_id=user_id, thread_id=thread_id)
+            if not approved:
+                if request.status == "REJECTED":
+                    return request
+                if request.status == "APPROVED":
+                    raise ValueError("approval request is already APPROVED")
+                if request.status == "SUBMITTING":
+                    raise ValueError("approval request is currently SUBMITTING; recover it before rejecting")
+                if request.status in {"PENDING_CONFIRMATION", "UNKNOWN", "SUBMITTED"}:
+                    repo.transition(request_id, "REJECTED", user_id=user_id)
+                else:
+                    raise ValueError(f"approval request cannot be rejected from {request.status}")
+            else:
+                if request.status == "APPROVED":
+                    return request
+                if request.status == "REJECTED":
+                    raise ValueError("approval request is already REJECTED")
+                if request.status in {"PENDING_CONFIRMATION", "UNKNOWN"}:
+                    repo.transition(
+                        request_id,
+                        "SUBMITTING",
+                        user_id=user_id,
+                        expected_snapshot_hash=request.snapshot_hash,
+                        expected_workflow_version=request.workflow_version,
+                    )
+                elif request.status not in {"SUBMITTING", "SUBMITTED"}:
+                    raise ValueError(f"approval request cannot be approved from {request.status}")
+            session.commit()
+            return request
+
+    def mark_unknown(
+        self,
+        *,
+        request_id: str,
+        user_id: str,
+        thread_id: str | None = None,
+    ) -> ApprovalRequest:
+        """Record that checkpoint resume and business state are inconsistent."""
+        with self.session_factory() as session:
+            repo = ApprovalRepository(session)
+            request = repo.get(request_id)
+            if request is None:
+                raise LookupError(f"approval request not found: {request_id}")
+            self._validate_scope(session, request, user_id=user_id, thread_id=thread_id)
+            if request.status == "UNKNOWN":
+                return request
+            if request.status not in {"SUBMITTING", "SUBMITTED"}:
+                raise ValueError(f"approval request cannot be marked UNKNOWN from {request.status}")
+            request = repo.transition(request_id, "UNKNOWN", user_id=user_id)
+            session.commit()
+            return request
+
+    def resolve(
+        self,
+        *,
+        request_id: str,
+        user_id: str,
+        approved: bool,
+        thread_id: str | None = None,
+    ) -> ApprovalRequest:
+        """Record the terminal decision with explicit, idempotent state rules.
+
+        This method remains convenient for callers that do not have a separate
+        checkpoint resume step. The CLI uses ``begin_resolution`` first so a
+        failed resume is recoverable as ``UNKNOWN`` rather than looking approved.
+        """
+        with self.session_factory() as session:
+            repo = ApprovalRepository(session)
+            request = repo.get(request_id)
+            if request is None:
+                raise LookupError(f"approval request not found: {request_id}")
+            self._validate_scope(session, request, user_id=user_id, thread_id=thread_id)
+            if approved:
+                if request.status == "APPROVED":
+                    return request
+                if request.status == "REJECTED":
+                    raise ValueError("approval request is already REJECTED")
+                if request.status in {"PENDING_CONFIRMATION", "UNKNOWN"}:
+                    repo.transition(
+                        request_id,
+                        "SUBMITTING",
+                        user_id=user_id,
+                        expected_snapshot_hash=request.snapshot_hash,
+                        expected_workflow_version=request.workflow_version,
+                    )
+                if request.status in {"PENDING_CONFIRMATION", "UNKNOWN", "SUBMITTING"}:
+                    repo.transition(request_id, "SUBMITTED", user_id=user_id)
+                if request.status in {"PENDING_CONFIRMATION", "UNKNOWN", "SUBMITTING", "SUBMITTED"}:
+                    repo.transition(request_id, "APPROVED", user_id=user_id)
+            else:
+                if request.status == "REJECTED":
+                    return request
+                if request.status == "APPROVED":
+                    raise ValueError("approval request is already APPROVED")
+                if request.status == "SUBMITTING":
+                    raise ValueError("approval request is currently SUBMITTING; mark it UNKNOWN before rejecting")
+                if request.status in {"PENDING_CONFIRMATION", "UNKNOWN", "SUBMITTED"}:
+                    repo.transition(request_id, "REJECTED", user_id=user_id)
+                else:
+                    raise ValueError(f"approval request cannot be rejected from {request.status}")
+            session.commit()
+            return request
+
+
+    @staticmethod
+    def _validate_scope(
+        session: Session,
+        request: ApprovalRequest,
+        *,
+        user_id: str | None,
+        thread_id: str | None,
+    ) -> None:
+        if thread_id is not None and request.thread_id != thread_id:
+            raise PermissionError("approval request does not belong to the supplied thread")
+        if user_id is not None and request.user_id != user_id:
+            raise PermissionError("approval request does not belong to the configured user")
+        if request.thread_id is not None:
+            thread = session.get(Thread, request.thread_id)
+            if thread is None or thread.user_id != request.user_id:
+                raise PermissionError("approval request thread owner does not match its user scope")
 
 
 def _stable_hash(arguments: Mapping[str, Any]) -> str:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,7 +15,9 @@ from personal_assistant.storage.state import MemoryStatus
 class MemoryService:
     """Business rules around candidate extraction, trust and lifecycle transitions."""
 
-    def __init__(self, session: Session, embeddings: EmbeddingsLike, *, withdraw_hours: int = 24) -> None:
+    def __init__(
+        self, session: Session, embeddings: EmbeddingsLike | None = None, *, withdraw_hours: int = 24
+    ) -> None:
         self.repository = MemoryRepository(session)
         self.embeddings = embeddings
         self.withdraw_hours = withdraw_hours
@@ -27,6 +29,8 @@ class MemoryService:
             raise ValueError("memory content cannot be empty")
         if not 0 <= confidence <= 1:
             raise ValueError("confidence must be between 0 and 1")
+        if self.embeddings is None:
+            raise ValueError("embeddings are required to propose a memory")
         vector = self.embeddings.embed_query(content)
         candidate = self.repository.create_candidate(
             user_id=user_id,
@@ -36,7 +40,7 @@ class MemoryService:
             confidence=confidence,
             evidence={**dict(evidence or {}), "sensitive": sensitive},
             embedding=vector,
-            withdraw_deadline=datetime.now(timezone.utc) + timedelta(hours=self.withdraw_hours),
+            withdraw_deadline=datetime.now(UTC) + timedelta(hours=self.withdraw_hours),
         )
         conflicts = self.repository.find_conflicts(user_id=user_id, kind=kind, content=content)
         if conflicts:

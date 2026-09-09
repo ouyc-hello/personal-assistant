@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS tool_runs (
 
 CREATE TABLE IF NOT EXISTS approval_requests (
     id UUID PRIMARY KEY,
+    user_id TEXT NOT NULL,
     thread_id UUID REFERENCES threads(id),
     workflow_version TEXT NOT NULL,
     snapshot_hash TEXT NOT NULL,

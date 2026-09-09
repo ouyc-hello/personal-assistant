@@ -70,3 +70,45 @@ def test_real_graph_without_retriever_still_answers_chat() -> None:
     assert result.retrieved_hits == []
     assert result.answer
     assert "answer:llm" in result.trace
+
+
+def test_checkpointed_turn_replaces_previous_message_state() -> None:
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import MemorySaver
+
+    class TwoTurnModel:
+        def __init__(self) -> None:
+            self.inputs = []
+            self.responses = [AIMessage(content="第一轮"), AIMessage(content="第二轮")]
+
+        def invoke(self, messages):
+            self.inputs.append(messages)
+            return self.responses.pop(0)
+
+    model = TwoTurnModel()
+    saver = MemorySaver()
+    first = run_real(
+        "根据文档说明采购流程",
+        user_id="user-1",
+        thread_id="same-thread",
+        chat_model=model,
+        retriever=UnifiedRetriever({"milvus": FakeBackend()}),
+        checkpointer=saver,
+    )
+    second = run_real(
+        "你好",
+        user_id="user-1",
+        thread_id="same-thread",
+        chat_model=model,
+        checkpointer=saver,
+        conversation_history=[],
+    )
+
+    assert first.answer == "第一轮"
+    assert second.answer == "第二轮"
+    assert second.retrieved_hits == []
+    assert [message.content for message in model.inputs[1] if hasattr(message, "content")] == [
+        model.inputs[1][0].content,
+        "你好",
+    ]
+    assert len(model.inputs[1]) == 2

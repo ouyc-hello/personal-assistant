@@ -597,11 +597,11 @@ security_denied_total
 | 确定性 Fake LLM/工具 | 不依赖真实服务即可回归路由、三分类状态机和审批流程 |
 | 组件失败降级 | Retriever、Embedding 或工具失败时，状态机可记录错误并安全结束 |
 
-### 13.5 当前落地状态（2026-09-08）
+### 13.5 当前落地状态（2026-09-09）
 
 公开仓库当前处于 CLI-first 实现准备阶段：根目录 `.gitignore` 继续忽略 `RAG/`、`interview_docs/` 和 `config.py`，这些学习材料与敏感配置不作为运行时依赖，也不会上传。正式代码放在独立的 `assistant_app/` 目录，并只提交 `.env.example`、接口、迁移和测试。
 
-本阶段已建立三存储适配器边界：PostgreSQL 保存业务真相，pgvector 保存可信记忆 embedding，Milvus 保存文档 chunk embedding，Neo4j 保存实体关系；LangChain/LangGraph 只依赖这些边界接口。M2 已补齐 PostgreSQL ORM 模型、Repository、状态迁移、审计和幂等约束，并用 SQLite 做确定性回归；M3 已补齐 LangChain 文档加载/递归分块契约、Embedding 工厂、稳定 chunk ID、Milvus 文档索引适配器和来源 metadata；M4 已补齐可信记忆候选、来源与置信度、敏感信息拦截、冲突解决、版本 supersede、24 小时撤回、过期归档、删除审计和 pgvector/SQLite 语义检索；M5 已补齐 Neo4j 实体/关系模型、幂等 upsert、用户隔离、实体查找、多跳邻域检索和 PostgreSQL/文档来源回链；M6 已补齐统一路由、权限二次过滤、跨后端 RRF 融合、故障降级和可解释 debug trace；M7 已补齐工具执行状态持久化、输入哈希与幂等键校验、外部成功未确认状态、重启对账、审批快照哈希和工作流版本校验。PostgreSQL 关系记录始终是记忆真源，向量索引和图索引只负责召回与关系解释，不能单独决定记忆是否可信。真实数据库联调、Embedding 和外部工具在对应里程碑开启，Fake 模式用于无外部服务回归。
+本阶段已建立三存储适配器边界：PostgreSQL 保存业务真相，pgvector 保存可信记忆 embedding，Milvus 保存文档 chunk embedding，Neo4j 保存实体关系；LangChain/LangGraph 只依赖这些边界接口。M2 已补齐 PostgreSQL ORM 模型、Repository、状态迁移、审计和幂等约束，并用 SQLite 做确定性回归；M3 已补齐 LangChain 文档加载/递归分块契约、Embedding 工厂、稳定 chunk ID、Milvus 文档索引适配器和来源 metadata；M4 已补齐可信记忆候选、来源与置信度、敏感信息拦截、冲突解决、版本 supersede、24 小时撤回、过期归档、删除审计和 pgvector/SQLite 语义检索；M5 已补齐 Neo4j 实体/关系模型、幂等 upsert、用户隔离、实体查找、多跳邻域检索和 PostgreSQL/文档来源回链；M6 已补齐统一路由、权限二次过滤、跨后端 RRF 融合、故障降级和可解释 debug trace；M7 已补齐工具执行状态持久化、输入哈希与幂等键校验、外部成功未确认状态、重启对账、审批快照哈希和工作流版本校验。2026-09-09 又补齐了真实 LangGraph 工具循环、工具调用持久化、工具重试止损审计、PostgreSQL checkpoint 配置、审批 interrupt/resume、明确的审批终态规则、审批请求 user scope，以及 checkpoint/业务状态分裂时的 `UNKNOWN` 恢复边界；CLI 已提供 `db-migrate`、记忆管理、`debug`/`sources` 和审批命令。PostgreSQL 关系记录始终是记忆真源，向量索引和图索引只负责召回与关系解释，不能单独决定记忆是否可信。真实数据库联调、Embedding 和外部工具在对应里程碑开启，Fake 模式用于无外部服务回归。
 
 ## 14. 里程碑
 

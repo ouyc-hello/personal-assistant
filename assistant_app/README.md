@@ -52,6 +52,36 @@ docker compose --env-file .env up -d --pull never
 
 PostgreSQL 不由本项目的 Compose 管理。请先确保主机 PostgreSQL 已启动，并在 `.env` 中配置 `PA_DATABASE_URL`；如果启用了 pgvector，还需要在目标数据库执行 `CREATE EXTENSION IF NOT EXISTS vector;`。可以运行 `python -m personal_assistant db-init` 创建应用表。
 
+### 常用 CLI 命令
+
+```bash
+# 运行数据库 SQL 迁移（生产/本地 PostgreSQL）
+python -m personal_assistant db-migrate
+
+# 查看可信记忆；--include-candidates 用于排查尚未发布的候选
+python -m personal_assistant memories --include-candidates
+python -m personal_assistant remember "我偏好中文、简洁的回答" --kind preference
+python -m personal_assistant forget <memory-id>
+
+# 查看某一轮对话的 trace 和检索来源；默认可查看当前进程最近结果
+python -m personal_assistant debug <thread-id>
+python -m personal_assistant sources <thread-id>
+```
+
+`debug` 会显示路由、检索命中数、工具名称/调用 ID 和 trace，但不会打印工具参数，避免把个人信息或密钥写入终端日志。
+
+### 审批与恢复边界
+
+审批工作流要求 `PA_CHECKPOINT_ENABLED=true`，并使用 PostgreSQL checkpoint 保存 LangGraph 中断状态：
+
+```bash
+python -m personal_assistant approve-start '{"tool":"notify","text":"hello"}' --thread-id <thread-id>
+python -m personal_assistant approve-resume <thread-id> <request-id> --approved
+# 或：--rejected
+```
+
+`approve-resume --approved` 会先把业务审批置为 `SUBMITTING`，再恢复 checkpoint；恢复失败时尽力记录为 `UNKNOWN`，而不是静默标记为已批准。`UNKNOWN` 表示 checkpoint 与业务状态需要人工/对账流程确认，当前示例审批图不会声称实现真实外部副作用的 exactly-once。审批请求会持久化 `user_id`，即使没有 thread 也不能被其他用户解析；真实工具仍必须通过 `ToolExecutor` 的幂等键、成功未确认状态和对账接口执行。
+
 本地 BGE 模型可以直接通过 `model.safetensors` 加载，不需要 Docker 或 7078 端口的 Embedding HTTP 服务。
 模型目录需要至少包含 `config.json`、`model.safetensors`（或 `pytorch_model.bin`）和 tokenizer 文件；
 当前 `bge-small-zh-v1.5/` 已满足该结构。在 NVIDIA GPU 环境中将 `PA_EMBEDDING_DEVICE=cuda`；也可以保留 `cpu` 运行。启动前可用下面的命令确认 PyTorch 已识别 CUDA：
@@ -90,11 +120,11 @@ cd assistant_app
 - 可信长期记忆生命周期：候选、来源/置信度、敏感信息拦截、冲突解决、版本 supersede、24 小时撤回、过期归档、删除审计，以及 pgvector 语义检索（SQLite fallback 仅用于测试）。
 - Neo4j Graph RAG：实体/关系幂等写入、用户隔离、实体查找、多跳邻域、来源回链和 Fake 图后端。
 - 统一检索：按意图选择后端，执行权限二次过滤、RRF 融合、跨后端去重、单后端故障降级，并在 Agent state 中保留 trace。
-- 可靠执行：工具状态先落库，外部调用携带幂等键，输入哈希防止复用冲突；支持 `EXECUTED_SUCCESS_UNACK` 重启对账，以及审批快照/工作流版本校验。
+- 可靠执行：工具状态先落库，外部调用携带幂等键，输入哈希防止复用冲突；支持 `EXECUTED_SUCCESS_UNACK` 重启对账、重试上限审计，以及审批快照/工作流版本校验和 `UNKNOWN` 恢复边界。
 
 `memory_records` 是可信记忆的关系真源；pgvector 只用于语义召回，默认只返回 `PUBLISHED` 记录，不能绕过状态、版本和权限规则。Neo4j 只保存可解释实体关系，不替代 PostgreSQL 任务/审批状态。工具执行和审批恢复通过 `personal_assistant.agent.execution` 提供业务层封装；真实外部工具只需实现幂等执行与对账接口。Fake 模式用于没有 LLM/数据库时的确定性回归。
 
-运行 M1-M7 回归测试：
+运行 M1-M7 回归测试（当前实现已覆盖 M7 的 CLI/状态边界）：
 
 ```bash
 PYTHONPATH=src pytest -q tests

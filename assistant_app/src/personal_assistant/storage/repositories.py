@@ -5,10 +5,10 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from personal_assistant.rag.models import IndexedChunk
@@ -18,12 +18,12 @@ from personal_assistant.storage.models import (
     AuditEvent,
     KnowledgeChunk,
     KnowledgeDocument,
+    MemoryCandidate,
+    MemoryRecord,
     Message,
     Task,
     Thread,
     ToolRun,
-    MemoryCandidate,
-    MemoryRecord,
     new_id,
 )
 from personal_assistant.storage.state import (
@@ -47,13 +47,37 @@ def snapshot_hash(snapshot: Mapping[str, Any]) -> str:
 
 
 def _audit(session: Session, *, user_id: str, event_type: str, entity_type: str,
-           entity_id: str, payload: Mapping[str, Any] | None = None) -> AuditEvent:
+           entity_id: str, payload: Mapping[str, Any] | None = None) -> AuditEvent | None:
+    values = dict(payload or {})
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        # The repository must work with both the current BIGSERIAL audit schema
+        # and the older UUID/aggregate schema. Both are covered by migrations;
+        # omitting id lets either database generate its native key.
+        session.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(user_id, event_type, entity_type, entity_id, aggregate_type, "
+                "aggregate_id, actor_type, payload) "
+                "VALUES (:user_id, :event_type, :entity_type, :entity_id, "
+                ":aggregate_type, :aggregate_id, 'SYSTEM', CAST(:payload AS jsonb))"
+            ),
+            {
+                "user_id": user_id,
+                "event_type": event_type,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "aggregate_type": entity_type,
+                "aggregate_id": entity_id,
+                "payload": json.dumps(values, ensure_ascii=False),
+            },
+        )
+        return None
     event = AuditEvent(
         user_id=user_id,
         event_type=event_type,
         entity_type=entity_type,
         entity_id=entity_id,
-        payload=dict(payload or {}),
+        payload=values,
     )
     session.add(event)
     return event
@@ -93,7 +117,7 @@ class ThreadRepository:
             event_seq=int(current or 0) + 1,
         )
         self.session.add(message)
-        thread.updated_at = datetime.now(timezone.utc)
+        thread.updated_at = datetime.now(UTC)
         self.session.flush()
         _audit(
             self.session,
@@ -111,13 +135,11 @@ class AuditRepository:
         self.session = session
 
     def list_for_entity(self, entity_type: str, entity_id: str) -> list[AuditEvent]:
-        return list(
-            self.session.scalars(
-                select(AuditEvent)
-                .where(AuditEvent.entity_type == entity_type, AuditEvent.entity_id == entity_id)
-                .order_by(AuditEvent.id)
-            )
+        query = select(AuditEvent).where(
+            (AuditEvent.entity_type == entity_type) | (AuditEvent.aggregate_type == entity_type),
+            (AuditEvent.entity_id == entity_id) | (AuditEvent.aggregate_id == entity_id),
         )
+        return list(self.session.scalars(query.order_by(AuditEvent.id)))
 
 
 class MemoryRepository:
@@ -129,6 +151,8 @@ class MemoryRepository:
                          embedding: list[float] | None, withdraw_deadline: datetime | None) -> MemoryCandidate:
         candidate = MemoryCandidate(
             user_id=user_id,
+            title=content,
+            candidate_type=kind,
             kind=kind,
             content=content,
             source=source,
@@ -223,7 +247,7 @@ class MemoryRepository:
         if old.user_id != candidate.user_id or old.kind != candidate.kind or old.status != "PUBLISHED":
             raise InvalidStateTransition("memory conflict does not match the published record")
         old.status = "SUPERSEDED"
-        old.updated_at = datetime.now(timezone.utc)
+        old.updated_at = datetime.now(UTC)
         self.session.flush()
         _audit(
             self.session,
@@ -236,7 +260,7 @@ class MemoryRepository:
         return self._publish_candidate(candidate, version=old.version + 1)
 
     def expire_candidates(self, *, now: datetime | None = None) -> list[MemoryCandidate]:
-        cutoff = now or datetime.now(timezone.utc)
+        cutoff = now or datetime.now(UTC)
         candidates = self.session.scalars(
             select(MemoryCandidate).where(
                 MemoryCandidate.status.in_(("CANDIDATE", "CONFLICT")),
@@ -263,13 +287,13 @@ class MemoryRepository:
         deadline = record.withdraw_deadline
         if deadline is not None:
             if deadline.tzinfo is None:
-                deadline = deadline.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) > deadline and actor == "user":
+                deadline = deadline.replace(tzinfo=UTC)
+            if datetime.now(UTC) > deadline and actor == "user":
                 raise InvalidStateTransition("memory withdrawal window has expired")
         if record.status != "PUBLISHED":
             raise InvalidStateTransition(f"cannot withdraw memory in status {record.status}")
         record.status = "DELETED"
-        record.updated_at = datetime.now(timezone.utc)
+        record.updated_at = datetime.now(UTC)
         self.session.flush()
         _audit(
             self.session,
@@ -280,6 +304,34 @@ class MemoryRepository:
             payload={"actor": actor},
         )
         return record
+
+    def list_records(
+        self, *, user_id: str, status: str | None = None, limit: int = 50
+    ) -> list[MemoryRecord]:
+        if limit <= 0:
+            return []
+        query = select(MemoryRecord).where(MemoryRecord.user_id == user_id)
+        if status:
+            query = query.where(MemoryRecord.status == status)
+        return list(
+            self.session.scalars(
+                query.order_by(MemoryRecord.updated_at.desc()).limit(limit)
+            )
+        )
+
+    def list_candidates(
+        self, *, user_id: str, status: str | None = None, limit: int = 50
+    ) -> list[MemoryCandidate]:
+        if limit <= 0:
+            return []
+        query = select(MemoryCandidate).where(MemoryCandidate.user_id == user_id)
+        if status:
+            query = query.where(MemoryCandidate.status == status)
+        return list(
+            self.session.scalars(
+                query.order_by(MemoryCandidate.created_at.desc()).limit(limit)
+            )
+        )
 
     def search_published(self, *, user_id: str, query_vector: list[float], limit: int = 5) -> list[SearchHit]:
         if limit <= 0:
@@ -382,7 +434,7 @@ class KnowledgeRepository:
         if document is None:
             raise LookupError(f"knowledge document not found: {document_id}")
         document.status = status
-        document.updated_at = datetime.now(timezone.utc)
+        document.updated_at = datetime.now(UTC)
         self.session.flush()
         _audit(
             self.session,
@@ -421,7 +473,7 @@ class TaskRepository:
             raise InvalidStateTransition(f"task: {task.status} -> {new_status} is not allowed")
         old_status = task.status
         task.status = new_status
-        task.updated_at = datetime.now(timezone.utc)
+        task.updated_at = datetime.now(UTC)
         self.session.flush()
         _audit(
             self.session,
@@ -469,6 +521,32 @@ class ToolRunRepository:
         )
         return run
 
+    def append_trace(
+        self,
+        run_id: str,
+        *,
+        user_id: str,
+        trace_event: Mapping[str, Any],
+        audit_event_type: str | None = None,
+    ) -> ToolRun:
+        run = self.session.get(ToolRun, run_id)
+        if run is None:
+            raise LookupError(f"tool run not found: {run_id}")
+        event = dict(trace_event)
+        run.trace = [*run.trace, event]
+        run.updated_at = datetime.now(UTC)
+        self.session.flush()
+        if audit_event_type is not None:
+            _audit(
+                self.session,
+                user_id=user_id,
+                event_type=audit_event_type,
+                entity_type="tool_run",
+                entity_id=run.id,
+                payload=event,
+            )
+        return run
+
     def transition(self, run_id: str, new_status: str, *, user_id: str,
                    trace_event: Mapping[str, Any] | None = None) -> ToolRun:
         run = self.session.get(ToolRun, run_id)
@@ -479,7 +557,7 @@ class ToolRunRepository:
             raise InvalidStateTransition(f"tool_run: {run.status} -> {new_status} is not allowed")
         old_status = run.status
         run.status = new_status
-        run.updated_at = datetime.now(timezone.utc)
+        run.updated_at = datetime.now(UTC)
         run.trace = [*run.trace, dict(trace_event or {"event": "status_changed", "to": new_status})]
         self.session.flush()
         _audit(
@@ -497,10 +575,14 @@ class ApprovalRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def get(self, request_id: str) -> ApprovalRequest | None:
+        return self.session.get(ApprovalRequest, request_id)
+
     def create(self, *, user_id: str, snapshot: Mapping[str, Any], workflow_version: str,
                thread_id: str | None = None) -> ApprovalRequest:
         data = dict(snapshot)
         request = ApprovalRequest(
+            user_id=user_id,
             thread_id=thread_id,
             workflow_version=workflow_version,
             snapshot_hash=snapshot_hash(data),
@@ -530,7 +612,7 @@ class ApprovalRepository:
             raise InvalidStateTransition(f"approval: {request.status} -> {new_status} is not allowed")
         old_status = request.status
         request.status = new_status
-        request.updated_at = datetime.now(timezone.utc)
+        request.updated_at = datetime.now(UTC)
         self.session.flush()
         _audit(self.session, user_id=user_id, event_type="APPROVAL_STATUS_CHANGED", entity_type="approval_request", entity_id=request.id,
                payload={"from": old_status, "to": new_status, "snapshot_hash": request.snapshot_hash})

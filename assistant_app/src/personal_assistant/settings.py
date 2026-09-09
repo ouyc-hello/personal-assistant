@@ -31,9 +31,12 @@ class Settings:
     neo4j_database: str = "neo4j"
     default_user_id: str = "local-user"
     max_graph_steps: int = 5
+    max_tool_attempts: int = 4
+    enabled_tools: tuple[str, ...] = ("current_time",)
+    checkpoint_enabled: bool = False
 
     @classmethod
-    def from_env(cls, env_file: str | Path | None = None) -> "Settings":
+    def from_env(cls, env_file: str | Path | None = None) -> Settings:
         """Load `.env` opportunistically, without ever requiring one in CI."""
         if env_file is not None:
             try:
@@ -65,4 +68,11 @@ class Settings:
             neo4j_database=os.getenv("PA_NEO4J_DATABASE", cls.neo4j_database),
             default_user_id=os.getenv("PA_DEFAULT_USER_ID", cls.default_user_id),
             max_graph_steps=int(os.getenv("PA_MAX_GRAPH_STEPS", str(cls.max_graph_steps))),
+            max_tool_attempts=int(os.getenv("PA_MAX_TOOL_ATTEMPTS", str(cls.max_tool_attempts))),
+            enabled_tools=tuple(
+                item.strip()
+                for item in os.getenv("PA_ENABLED_TOOLS", ",".join(cls.enabled_tools)).split(",")
+                if item.strip()
+            ),
+            checkpoint_enabled=os.getenv("PA_CHECKPOINT_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
         )

@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 
+from personal_assistant.schemas import AssistantState
 from personal_assistant.settings import Settings
 from personal_assistant.storage.database import Database
-from personal_assistant.storage.models import Message, Task
+from personal_assistant.storage.models import AuditEvent, Message, Task
 from personal_assistant.storage.repositories import TaskRepository, ThreadRepository
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -111,15 +112,19 @@ def persist_conversation_turn(
     assistant_message: str,
     *,
     thread_id: str | None = None,
+    run: AssistantState | None = None,
 ) -> str:
-    """Persist a normal user/assistant turn and return its durable thread ID."""
+    """Persist a normal turn and optional graph trace atomically."""
     database = Database(settings=settings)
     try:
         with database.session() as session:
             if session.bind is not None and session.bind.dialect.name == "postgresql":
-                return _persist_turn_postgres(
+                durable_thread_id = _persist_turn_postgres(
                     session, settings, user_message, assistant_message, thread_id=thread_id
                 )
+                if run is not None:
+                    _append_chat_run_postgres(session, settings, run)
+                return durable_thread_id
 
             threads = ThreadRepository(session)
             thread = threads.get(thread_id) if thread_id else None
@@ -129,6 +134,10 @@ def persist_conversation_turn(
                 raise PermissionError("thread does not belong to the configured user")
             threads.append_message(thread.id, "user", user_message)
             threads.append_message(thread.id, "assistant", assistant_message)
+            if run is not None:
+                _append_chat_run(
+                    session, settings, run.model_copy(update={"thread_id": thread.id})
+                )
             return thread.id
     finally:
         database.dispose()
@@ -165,6 +174,86 @@ def load_conversation_history(
             return [(message.role, message.content) for message in reversed(rows)]
     finally:
         database.dispose()
+
+
+
+def load_chat_run(settings: Settings, thread_id: str | None) -> AssistantState | None:
+    """Load the latest persisted graph result for a thread across CLI processes."""
+    database = Database(settings=settings)
+    try:
+        with database.session() as session:
+            if session.bind is not None and session.bind.dialect.name == "postgresql":
+                aggregate_filter = "AND aggregate_id = :thread_id" if thread_id else ""
+                params = {"user_id": settings.default_user_id}
+                if thread_id:
+                    params["thread_id"] = thread_id
+                rows = session.execute(
+                    text(
+                        "SELECT payload FROM audit_events "
+                        "WHERE user_id = :user_id AND aggregate_type = 'chat_run' "
+                        f"{aggregate_filter} ORDER BY id DESC LIMIT 1"
+                    ),
+                    params,
+                ).all()
+                if rows:
+                    payload = rows[0][0] or {}
+                    return AssistantState.model_validate(payload.get("result", {}))
+                return None
+
+            filters = [
+                AuditEvent.user_id == settings.default_user_id,
+                AuditEvent.entity_type == "chat_run",
+            ]
+            if thread_id:
+                filters.append(AuditEvent.entity_id == thread_id)
+            events = session.scalars(
+                select(AuditEvent)
+                .where(*filters)
+                .order_by(AuditEvent.id.desc())
+                .limit(1)
+            ).all()
+            if events:
+                return AssistantState.model_validate((events[0].payload or {}).get("result", {}))
+            return None
+    finally:
+        database.dispose()
+
+
+def _chat_run_payload(run: AssistantState) -> dict[str, object]:
+    return {
+        "thread_id": run.thread_id,
+        "route": run.route.value,
+        "result": run.model_dump(mode="json"),
+    }
+
+
+def _append_chat_run(session, settings: Settings, run: AssistantState) -> None:
+    session.add(
+        AuditEvent(
+            user_id=settings.default_user_id,
+            event_type="CHAT_RUN_COMPLETED",
+            entity_type="chat_run",
+            entity_id=run.thread_id,
+            payload=_chat_run_payload(run),
+        )
+    )
+    session.flush()
+
+
+def _append_chat_run_postgres(session, settings: Settings, run: AssistantState) -> None:
+    session.execute(
+        text(
+            "INSERT INTO audit_events "
+            "(user_id, aggregate_type, aggregate_id, event_type, actor_type, payload) "
+            "VALUES (:user_id, 'chat_run', :aggregate_id, 'CHAT_RUN_COMPLETED', 'SYSTEM', "
+            "CAST(:payload AS jsonb))"
+        ),
+        {
+            "user_id": settings.default_user_id,
+            "aggregate_id": run.thread_id,
+            "payload": json.dumps(_chat_run_payload(run), ensure_ascii=False),
+        },
+    )
 
 
 def _get_or_create_postgres_thread(session, settings: Settings, thread_id: str | None) -> str:
@@ -276,7 +365,7 @@ def _persist_turn_postgres(session, settings: Settings, user_message: str, assis
 
 
 def _parse_due_at(message: str, *, now: datetime | None) -> datetime | None:
-    current = (now or datetime.now(timezone.utc)).astimezone(LOCAL_TIMEZONE)
+    current = (now or datetime.now(UTC)).astimezone(LOCAL_TIMEZONE)
     target_date = current.date()
 
     if "后天" in message:
@@ -317,7 +406,7 @@ def _parse_due_at(message: str, *, now: datetime | None) -> datetime | None:
         hour,
         minute,
         tzinfo=LOCAL_TIMEZONE,
-    ).astimezone(timezone.utc)
+    ).astimezone(UTC)
 
 
 def _task_reply(task: Task, *, timezone_name: str) -> str:
