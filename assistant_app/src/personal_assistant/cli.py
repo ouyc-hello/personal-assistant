@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from personal_assistant.agent.graph import run_fake
+from personal_assistant.agent.persistence import persist_conversation_turn, persist_task_request
 from personal_assistant.settings import Settings
 from personal_assistant.rag.embeddings import build_embeddings
 from personal_assistant.rag.ingest import ingest_file
@@ -31,8 +32,24 @@ def _print_fake_answer(message: str, settings: Settings) -> None:
     console.print(f"[dim]trace={' -> '.join(result.trace)}[/dim]")
 
 
-def _print_real_answer(message: str, settings: Settings) -> None:
-    """Call an OpenAI-compatible chat endpoint configured through the environment."""
+def _print_real_answer(
+    message: str,
+    settings: Settings,
+    *,
+    thread_id: str | None = None,
+) -> str | None:
+    """Handle durable task requests or call an OpenAI-compatible chat endpoint."""
+    try:
+        persisted_task = persist_task_request(settings, message, thread_id=thread_id)
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"任务写入 PostgreSQL 失败（{type(exc).__name__}）。请检查数据库连接和表结构。"
+        ) from exc
+    if persisted_task is not None:
+        console.print(persisted_task.reply)
+        console.print(f"[dim]thread_id={persisted_task.thread_id}[/dim]")
+        return persisted_task.thread_id
+
     if settings.llm_provider not in {"openai", "openai-compatible"}:
         raise typer.BadParameter(
             f"Unsupported PA_LLM_PROVIDER={settings.llm_provider!r}; use fake or openai."
@@ -75,14 +92,30 @@ def _print_real_answer(message: str, settings: Settings) -> None:
         answer = str(content)
     if not answer.strip():
         raise typer.BadParameter("LLM 返回了空内容。")
+    try:
+        durable_thread_id = persist_conversation_turn(
+            settings, message, answer, thread_id=thread_id
+        )
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"对话写入 PostgreSQL 失败（{type(exc).__name__}）。未输出未持久化的回答。"
+        ) from exc
     console.print(answer)
+    console.print(f"[dim]thread_id={durable_thread_id}[/dim]")
+    return durable_thread_id
 
 
-def _answer(message: str, settings: Settings, *, fake: bool = False) -> None:
+def _answer(
+    message: str,
+    settings: Settings,
+    *,
+    fake: bool = False,
+    thread_id: str | None = None,
+) -> str | None:
     if fake or settings.llm_provider == "fake":
         _print_fake_answer(message, settings)
-    else:
-        _print_real_answer(message, settings)
+        return thread_id
+    return _print_real_answer(message, settings, thread_id=thread_id)
 
 
 @app.command()
@@ -167,6 +200,7 @@ def repl(fake: bool = typer.Option(False, help="Use deterministic Fake mode.")) 
     settings = _settings()
     mode = "fake mode" if fake or settings.llm_provider == "fake" else f"{settings.llm_provider} mode"
     console.print(f"Personal Assistant ({mode}). 输入 /help 或 /quit。")
+    thread_id: str | None = None
     while True:
         try:
             message = typer.prompt("you", prompt_suffix="> ")
@@ -182,7 +216,7 @@ def repl(fake: bool = typer.Option(False, help="Use deterministic Fake mode.")) 
             console.print(classify_route(message[7:]).value)
             continue
         try:
-            _answer(message, settings, fake=fake)
+            thread_id = _answer(message, settings, fake=fake, thread_id=thread_id)
         except typer.BadParameter as exc:
             console.print(f"[red]{exc}[/red]")
 
