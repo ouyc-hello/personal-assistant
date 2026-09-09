@@ -6,7 +6,7 @@ ALTER TABLE memory_candidates
     ADD COLUMN IF NOT EXISTS withdraw_deadline TIMESTAMPTZ;
 
 ALTER TABLE memory_candidates
-    ADD COLUMN IF NOT EXISTS embedding vector(1536);
+    ADD COLUMN IF NOT EXISTS embedding vector;
 
 CREATE INDEX IF NOT EXISTS memory_candidates_user_kind_status_idx
     ON memory_candidates (user_id, kind, status);

@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS memory_records (
     version INTEGER NOT NULL DEFAULT 1,
     evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
     withdraw_deadline TIMESTAMPTZ,
-    embedding vector(1536),
+    embedding vector,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

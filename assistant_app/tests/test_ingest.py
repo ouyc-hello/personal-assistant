@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 
-from personal_assistant.rag.embeddings import HashEmbeddings
+from personal_assistant.rag.embeddings import HashEmbeddings, LangChainEmbeddingsAdapter
+from personal_assistant.settings import Settings
 from personal_assistant.rag.ingest import build_chunks, ingest_file
 from personal_assistant.storage.database import Database
 from personal_assistant.storage.models import KnowledgeChunk, KnowledgeDocument
@@ -32,6 +33,31 @@ def test_hash_embeddings_are_deterministic_and_normalized() -> None:
     assert first == second
     assert len(first) == 8
     assert round(sum(value * value for value in first), 6) == 1.0
+
+
+def test_langchain_embeddings_adapter_exposes_dimension() -> None:
+    class FakeClient:
+        def embed_documents(self, texts):
+            return [[float(len(text)), 0.0] for text in texts]
+
+        def embed_query(self, text):
+            return [float(len(text)), 0.0]
+
+    embeddings = LangChainEmbeddingsAdapter(FakeClient(), dimension=2)
+    assert embeddings.dimension == 2
+    assert embeddings.embed_documents(["a", "bb"]) == [[1.0, 0.0], [2.0, 0.0]]
+    assert embeddings.embed_query("abc") == [3.0, 0.0]
+
+
+def test_settings_load_local_embedding_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("PA_EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("PA_EMBEDDING_BASE_URL", "http://127.0.0.1:7078/v1/")
+    monkeypatch.setenv("PA_EMBEDDING_API_KEY", "local-key")
+    monkeypatch.setenv("PA_EMBEDDING_MODEL", "bge-small-zh-v1.5")
+    settings = Settings.from_env()
+    assert settings.embedding_base_url == "http://127.0.0.1:7078/v1/"
+    assert settings.embedding_api_key == "local-key"
+    assert settings.embedding_model == "bge-small-zh-v1.5"
 
 
 def test_build_chunks_has_stable_ids_and_source_metadata() -> None:

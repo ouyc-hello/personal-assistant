@@ -39,7 +39,7 @@ class EmbeddingType(TypeDecorator[list[float] | None]):
 
     def load_dialect_impl(self, dialect: Any) -> Any:
         if dialect.name == "postgresql" and Vector is not None:
-            return dialect.type_descriptor(Vector(1536))
+            return dialect.type_descriptor(Vector())
         return dialect.type_descriptor(JSON())
 
 

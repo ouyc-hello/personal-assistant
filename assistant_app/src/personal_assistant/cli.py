@@ -24,17 +24,71 @@ def _settings() -> Settings:
     return Settings.from_env(Path.cwd() / ".env")
 
 
+def _print_fake_answer(message: str, settings: Settings) -> None:
+    result = run_fake(message, user_id=settings.default_user_id)
+    console.print(result.answer)
+    console.print(f"[dim]thread_id={result.thread_id}[/dim]")
+    console.print(f"[dim]trace={' -> '.join(result.trace)}[/dim]")
+
+
+def _print_real_answer(message: str, settings: Settings) -> None:
+    """Call an OpenAI-compatible chat endpoint configured through the environment."""
+    if settings.llm_provider not in {"openai", "openai-compatible"}:
+        raise typer.BadParameter(
+            f"Unsupported PA_LLM_PROVIDER={settings.llm_provider!r}; use fake or openai."
+        )
+    if not settings.openai_api_key:
+        raise typer.BadParameter("PA_OPENAI_API_KEY is required when PA_LLM_PROVIDER=openai.")
+    if not settings.llm_model:
+        raise typer.BadParameter("PA_LLM_MODEL is required when PA_LLM_PROVIDER=openai.")
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError as exc:
+        raise typer.BadParameter(
+            "langchain-openai is required for real chat; install with: pip install -e '.[openai]'"
+        ) from exc
+
+    kwargs = {
+        "model": settings.llm_model,
+        "api_key": settings.openai_api_key,
+        "timeout": settings.llm_timeout_seconds,
+        "max_retries": 1,
+    }
+    if settings.openai_base_url:
+        kwargs["base_url"] = settings.openai_base_url
+    try:
+        response = ChatOpenAI(**kwargs).invoke(message)
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"LLM 请求失败（{type(exc).__name__}）：{exc}"
+        ) from exc
+
+    content = response.content
+    if isinstance(content, str):
+        answer = content
+    elif isinstance(content, list):
+        answer = "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    else:
+        answer = str(content)
+    if not answer.strip():
+        raise typer.BadParameter("LLM 返回了空内容。")
+    console.print(answer)
+
+
+def _answer(message: str, settings: Settings, *, fake: bool = False) -> None:
+    if fake or settings.llm_provider == "fake":
+        _print_fake_answer(message, settings)
+    else:
+        _print_real_answer(message, settings)
+
+
 @app.command()
 def chat(message: str, fake: bool = typer.Option(False, help="Use deterministic Fake mode.")) -> None:
-    """Run one assistant turn."""
-    settings = _settings()
-    if fake or settings.llm_provider == "fake":
-        result = run_fake(message, user_id=settings.default_user_id)
-        console.print(result.answer)
-        console.print(f"[dim]thread_id={result.thread_id}[/dim]")
-        console.print(f"[dim]trace={' -> '.join(result.trace)}[/dim]")
-        return
-    raise typer.BadParameter("Only PA_LLM_PROVIDER=fake is wired in the initial skeleton; use --fake.")
+    """Run one assistant turn using .env's LLM provider."""
+    _answer(message, _settings(), fake=fake)
 
 
 @app.command()
@@ -108,9 +162,11 @@ def health() -> None:
 
 
 @app.command()
-def repl() -> None:
-    """Start a dependency-light terminal REPL in Fake mode."""
-    console.print("Personal Assistant (fake mode). 输入 /help 或 /quit。")
+def repl(fake: bool = typer.Option(False, help="Use deterministic Fake mode.")) -> None:
+    """Start the terminal REPL using .env's LLM provider."""
+    settings = _settings()
+    mode = "fake mode" if fake or settings.llm_provider == "fake" else f"{settings.llm_provider} mode"
+    console.print(f"Personal Assistant ({mode}). 输入 /help 或 /quit。")
     while True:
         try:
             message = typer.prompt("you", prompt_suffix="> ")
@@ -125,8 +181,10 @@ def repl() -> None:
         if message.startswith("/route "):
             console.print(classify_route(message[7:]).value)
             continue
-        result = run_fake(message)
-        console.print(result.answer)
+        try:
+            _answer(message, settings, fake=fake)
+        except typer.BadParameter as exc:
+            console.print(f"[red]{exc}[/red]")
 
 
 if __name__ == "__main__":

@@ -28,3 +28,6 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# Build metadata
+*.egg-info/
